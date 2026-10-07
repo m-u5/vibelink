@@ -22,6 +22,8 @@ public final class IOSBridge: @unchecked Sendable {
 
     /// Number of tunnel ports opened ahead of the last one seen.
     static let window = 48
+    /// How long an old tunnel is kept after a newer one connects.
+    static let tunnelHandover: TimeInterval = 15
 
     private let ctl = DispatchQueue(label: "vibelink.ios.ctl")
     private let io = DispatchQueue(label: "vibelink.ios.io")
@@ -139,6 +141,10 @@ public final class IOSBridge: @unchecked Sendable {
         guard let cur = current else { return }
         for p in base...(base + Self.window) where tunnelRelays[p] == nil && p <= 65535 {
             let r = makeRelay(remotePort: UInt16(p))
+            r.onAccept = { [weak self] in
+                let accepted = Date()
+                self?.ctl.asyncAfter(deadline: .now() + Self.tunnelHandover) { self?.retireTunnels(acceptedBefore: accepted) }
+            }
             // Ports already used on this Mac fail to bind; those are skipped.
             if (try? r.start(host: cur.ipv4, port: UInt16(p))) != nil { tunnelRelays[p] = r }
         }
@@ -146,6 +152,13 @@ public final class IOSBridge: @unchecked Sendable {
             r.stopAll()
             tunnelRelays[p] = nil
         }
+    }
+
+    /// remotepairingd opens a new tunnel each time the control channel is re-established (about every
+    /// 40 seconds here) but never closes the previous one. Left alone, hundreds of idle tunnels pile up
+    /// and the iPhone keeps servicing all of them, which makes it stutter. Only the newest is in use.
+    private func retireTunnels(acceptedBefore date: Date) {
+        tunnelRelays.values.forEach { $0.closeConnections(acceptedBefore: date) }
     }
 
     private func makeRelay(remotePort: UInt16) -> TCPRelay {

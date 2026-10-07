@@ -12,6 +12,8 @@ final class TCPRelay {
     private var splices: [ObjectIdentifier: Splice] = [:]
     /// Last accept or open connection; read by the bridge watchdog.
     var lastActivity = Date()
+    /// Called on the relay queue after each accepted connection.
+    var onAccept: (() -> Void)?
 
     init(remoteHost: String, remotePort: UInt16, allowedPeers: Set<String>, queue: DispatchQueue, log: @escaping (String) -> Void) {
         self.remoteHost = remoteHost
@@ -74,6 +76,7 @@ final class TCPRelay {
         splices[id] = s
         s.onClose = { [weak self] in self?.splices[id] = nil }
         s.start()
+        onAccept?()
     }
 
     func stopAll() {
@@ -85,6 +88,13 @@ final class TCPRelay {
 
     var activeConnections: Int { splices.count }
 
+    /// Closes connections accepted before `date`.
+    func closeConnections(acceptedBefore date: Date) {
+        queue.async {
+            self.splices.values.filter { $0.acceptedAt < date }.forEach { $0.close() }
+        }
+    }
+
     enum RelayError: Error { case badAddress(String), timeout }
 }
 
@@ -93,6 +103,7 @@ final class Splice {
     let a: NWConnection, b: NWConnection
     let queue: DispatchQueue
     var onClose: (() -> Void)?
+    let acceptedAt = Date()
     private var finished = 0
     private var closed = false
 
